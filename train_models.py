@@ -1,130 +1,170 @@
+"""Train pre-race podium models with chronological calibration and season backtests.
+
+Usage: python train_models.py [--test-years 2022 2023 2024]
 """
-Train RF, Gradient Boosting, XGBoost on F1 data (predict podium top-3).
-Saves models + encoders to models/ for later inference.
-Usage: python train_models.py
-"""
+import argparse
+from datetime import datetime, timezone
+import hashlib
 import json
-import time
 from pathlib import Path
+import tempfile
+import time
 
 import joblib
+import numpy as np
 import pandas as pd
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
-from sklearn.metrics import (accuracy_score, classification_report, f1_score,
-                             precision_score, recall_score, roc_auc_score)
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import LabelEncoder
+import sklearn
+from sklearn.calibration import CalibratedClassifierCV
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
+from sklearn.frozen import FrozenEstimator
+from sklearn.metrics import (accuracy_score, average_precision_score, brier_score_loss,
+                             f1_score, log_loss, precision_score, recall_score, roc_auc_score)
 from xgboost import XGBClassifier
 
-DATA_DIR = Path(__file__).parent / "data"
-MODEL_DIR = Path(__file__).parent / "models"
-MODEL_DIR.mkdir(exist_ok=True)
+from features import FEATURES, SCHEMA_VERSION, START_YEAR, build_training_table, load_history, prepare_roster
+from prediction import MODEL_LABELS
 
-FEATURES_NUM = ['grid', 'laps', 'fastestLap', 'rank', 'fastestLapSpeed', 'year', 'statusId']
-TARGET = 'top3'
-
-
-def load_data():
-    results = pd.read_csv(DATA_DIR / 'results.csv')
-    drivers = pd.read_csv(DATA_DIR / 'drivers.csv')
-    races = pd.read_csv(DATA_DIR / 'races.csv')
-    constructors = pd.read_csv(DATA_DIR / 'constructors.csv')
-
-    df = results.merge(races[['raceId', 'year', 'circuitId']], on='raceId', how='left')
-    df = df.merge(drivers[['driverId', 'nationality']], on='driverId', how='left')
-    df = df.merge(constructors[['constructorId', 'name']], on='constructorId', how='left')
-
-    for col in ['position', 'grid', 'points', 'laps', 'fastestLap', 'rank', 'fastestLapSpeed', 'statusId']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-
-    # Target: podium finish (position 1-3). '\N'/DNF -> 0
-    df[TARGET] = (df['position'] <= 3).astype(int)
-
-    df_clean = df[FEATURES_NUM + [TARGET]].copy()
-
-    # Encode categoricals (fit on full data, save encoders for inference)
-    le_nat = LabelEncoder()
-    le_con = LabelEncoder()
-    nat = df.loc[df_clean.dropna().index, 'nationality'].fillna('Unknown')
-    con = df.loc[df_clean.dropna().index, 'name'].fillna('Unknown')
-    df_clean = df_clean.dropna()
-    df_clean['nationality_encoded'] = le_nat.fit_transform(nat)
-    df_clean['constructor_encoded'] = le_con.fit_transform(con)
-
-    features_final = FEATURES_NUM + ['nationality_encoded', 'constructor_encoded']
-    X = df_clean[features_final]
-    y = df_clean[TARGET]
-    return X, y, features_final, le_nat, le_con
+ROOT = Path(__file__).parent
+DATA_DIR, MODEL_DIR = ROOT / "data", ROOT / "models"
 
 
-def get_models(y_train):
-    neg, pos = (y_train == 0).sum(), (y_train == 1).sum()
-    scale = neg / max(pos, 1)
+def get_models() -> dict:
+    """Fixed hyperparameters; no tuning or class reweighting on held-out seasons."""
     return {
-        'random_forest': RandomForestClassifier(
-            n_estimators=200, max_depth=15, random_state=42, class_weight='balanced', n_jobs=-1),
-        'gradient_boost': GradientBoostingClassifier(
-            n_estimators=200, max_depth=5, learning_rate=0.1, random_state=42),
-        'xgboost': XGBClassifier(
-            n_estimators=200, max_depth=6, learning_rate=0.1, random_state=42,
-            eval_metric='logloss', scale_pos_weight=scale, n_jobs=-1),
+        "random_forest": RandomForestClassifier(
+            n_estimators=200, max_depth=10, min_samples_leaf=5, random_state=42, n_jobs=-1),
+        "gradient_boost": GradientBoostingClassifier(
+            n_estimators=150, max_depth=3, learning_rate=0.05, min_samples_leaf=10, random_state=42),
+        "xgboost": XGBClassifier(
+            n_estimators=200, max_depth=3, learning_rate=0.05, min_child_weight=5,
+            random_state=42, eval_metric="logloss", tree_method="hist", n_jobs=4),
     }
 
 
-def main():
-    print("Loading data...")
-    X, y, features, le_nat, le_con = load_data()
-    print(f"Samples: {len(X)} | Podiums: {int(y.sum())} ({y.mean()*100:.1f}%) | Features: {features}")
+def temporal_split(table: pd.DataFrame, test_year: int) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Reserve the preceding season exclusively for calibration."""
+    train = table.loc[table.year < test_year - 1]
+    calibration = table.loc[table.year == test_year - 1]
+    test = table.loc[table.year == test_year]
+    if any(frame.empty or frame.top3.nunique() < 2 for frame in (train, calibration, test)):
+        raise ValueError(f"{test_year}: need earlier training seasons, a calibration season, and a test season with both classes.")
+    if not train.date.max() < calibration.date.min() <= calibration.date.max() < test.date.min():
+        raise ValueError("Training, calibration and test dates must be strictly separated.")
+    return train, calibration, test
 
-    X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42, stratify=y)
-    print(f"Train: {len(X_train)} | Test: {len(X_test)}\n")
 
-    # Save encoders + feature list once (shared by all models)
-    joblib.dump({'features': features, 'le_nat': le_nat, 'le_con': le_con},
-                MODEL_DIR / 'preprocessors.joblib')
+def fit_calibrated(train: pd.DataFrame, calibration: pd.DataFrame) -> tuple[dict, dict]:
+    """Freeze each base estimator before fitting sigmoid calibration on later races."""
+    fitted, importance = {}, {}
+    for name, estimator in get_models().items():
+        estimator.fit(train[FEATURES], train.top3)
+        importance[MODEL_LABELS[name]] = estimator.feature_importances_.tolist()
+        calibrated = CalibratedClassifierCV(FrozenEstimator(estimator), method="sigmoid")
+        calibrated.fit(calibration[FEATURES], calibration.top3)
+        fitted[name] = calibrated
+    return fitted, importance
 
-    models = get_models(y_train)
-    summary = {}
 
-    for name, model in models.items():
-        print(f"{'='*60}\nTraining {name}\n{'='*60}")
-        t0 = time.time()
-        model.fit(X_train, y_train)
-        train_time = time.time() - t0
+def evaluate(entries: pd.DataFrame, probabilities: np.ndarray) -> dict:
+    """Report probability quality, fixed-threshold classification and top-three picks."""
+    y = entries.top3.to_numpy()
+    predictions = probabilities >= 0.5
+    ranked = entries[["raceId", "driver_key", "grid", "top3"]].assign(probability=probabilities)
+    picked = ranked.sort_values(["probability", "grid", "driver_key"], ascending=[False, True, True]).groupby("raceId").head(3)
+    return {
+        "accuracy": accuracy_score(y, predictions),
+        "precision": precision_score(y, predictions, zero_division=0),
+        "recall": recall_score(y, predictions, zero_division=0),
+        "f1": f1_score(y, predictions, zero_division=0),
+        "roc_auc": roc_auc_score(y, probabilities),
+        "average_precision": average_precision_score(y, probabilities),
+        "brier": brier_score_loss(y, probabilities),
+        "log_loss": log_loss(y, probabilities, labels=[0, 1]),
+        "top3_recall": float(picked.top3.sum() / y.sum()),
+    }
 
-        y_pred = model.predict(X_test)
-        y_proba = model.predict_proba(X_test)[:, 1] if hasattr(model, 'predict_proba') else y_pred
 
-        metrics = {
-            'accuracy': accuracy_score(y_test, y_pred),
-            'precision': precision_score(y_test, y_pred, zero_division=0),
-            'recall': recall_score(y_test, y_pred, zero_division=0),
-            'f1': f1_score(y_test, y_pred, zero_division=0),
-            'roc_auc': roc_auc_score(y_test, y_proba),
-            'time': train_time,
-        }
-        summary[name] = metrics
+def run_backtests(table: pd.DataFrame, years: list[int]) -> tuple[dict, pd.DataFrame]:
+    """Expanding season backtests, updating form only after preceding race results."""
+    folds, predictions = [], []
+    for year in years:
+        train, calibration, test = temporal_split(table, year)
+        print(f"Backtest {year}: fit {int(train.year.min())}–{int(train.year.max())}, calibrate {year - 1}, test {len(test)} entries", flush=True)
+        start = time.monotonic()
+        models, _ = fit_calibrated(train, calibration)
+        output = test[["raceId", "date", "year", "driver_key", "constructorId", "grid", "top3"]].copy()
+        for name, model in models.items():
+            output[name] = model.predict_proba(test[FEATURES])[:, 1]
+            output[f"{name}_raw"] = model.calibrated_classifiers_[0].estimator.predict_proba(test[FEATURES])[:, 1]
+        output["model_average"] = output[list(MODEL_LABELS)].mean(axis=1)
+        output["prior_rate"] = float(train.top3.mean())
+        output["grid_top3"] = (test.grid.between(1, 3)).astype(float)
+        metrics = {name: evaluate(output, output[name].to_numpy())
+                   for name in [*MODEL_LABELS, "model_average", "prior_rate", "grid_top3"]}
+        for name in MODEL_LABELS:
+            metrics[name]["raw_brier"] = brier_score_loss(test.top3, output[f"{name}_raw"])
+        folds.append({"test_year": year, "train_through": int(train.year.max()),
+                      "calibration_year": year - 1, "train_entries": len(train),
+                      "calibration_entries": len(calibration), "test_entries": len(test),
+                      "test_races": int(test.raceId.nunique()), "models": metrics})
+        predictions.append(output)
+        print(f"  Model average: F1={metrics['model_average']['f1']:.3f}, Brier={metrics['model_average']['brier']:.3f}, top-3 recall={metrics['model_average']['top3_recall']:.3f} ({time.monotonic() - start:.1f}s)", flush=True)
+    combined = pd.concat(predictions, ignore_index=True)
+    summary = {name: evaluate(combined, combined[name].to_numpy())
+               for name in [*MODEL_LABELS, "model_average", "prior_rate", "grid_top3"]}
+    for name in MODEL_LABELS:
+        summary[name]["raw_brier"] = brier_score_loss(combined.top3, combined[f"{name}_raw"])
+    # A constant prior has no ranking information; do not credit the grid tie-break.
+    summary["prior_rate"]["top3_recall"] = None
+    for fold in folds:
+        fold["models"]["prior_rate"]["top3_recall"] = None
+    return {"folds": folds, "models": summary, "test_entries": len(combined),
+            "test_races": int(combined.raceId.nunique())}, combined
 
-        print(f"Accuracy: {metrics['accuracy']:.4f} | F1: {metrics['f1']:.4f} | "
-              f"Prec: {metrics['precision']:.4f} | Rec: {metrics['recall']:.4f} | "
-              f"AUC: {metrics['roc_auc']:.4f} | Time: {train_time:.2f}s")
-        print(classification_report(y_test, y_pred, zero_division=0))
 
-        out = MODEL_DIR / f'f1_model_{name}.joblib'
-        joblib.dump(model, out)
-        print(f"Saved -> {out}\n")
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--test-years", type=int, nargs="+", help="Distinct held-out seasons; default: latest three seasons")
+    args = parser.parse_args()
+    history = load_history(DATA_DIR)
+    table, state = build_training_table(history)
+    latest_year = int(table.year.max())
+    years = sorted(set(args.test_years or range(latest_year - 2, latest_year + 1)))
+    report, predictions = run_backtests(table, years)
 
-    print(f"{'='*60}\nCOMPARISON (sorted by F1)\n{'='*60}")
-    df = pd.DataFrame(summary).T.sort_values('f1', ascending=False)
-    print(df.to_string(float_format='%.4f'))
-    best = df.index[0]
-    print(f"\nBest model: {best} (F1={df.loc[best, 'f1']:.4f})")
-    report = {"samples": len(X), "train_samples": len(X_train),
-              "test_samples": len(X_test), "models": summary}
+    # Deployment uses the latest season for calibration, without refitting the base on it.
+    deployment_train = table.loc[table.year < latest_year]
+    deployment_calibration = table.loc[table.year == latest_year]
+    print(f"Deployment: fit through {latest_year - 1}, calibrate on {latest_year}", flush=True)
+    models, importance = fit_calibrated(deployment_train, deployment_calibration)
+    cutoff = history.date.max().date().isoformat()
+    report.update({
+        "schema_version": SCHEMA_VERSION, "created_at": datetime.now(timezone.utc).isoformat(),
+        "features": FEATURES, "samples": len(table), "history_start_year": START_YEAR,
+        "trained_through": cutoff, "backtest_years": years,
+        "protocol": "Expanding seasons; preceding season reserved for sigmoid calibration; form updates after each earlier race; threshold 0.5.",
+        "deployment": {"base_train_through": latest_year - 1, "calibration_year": latest_year,
+                       "train_entries": len(deployment_train), "calibration_entries": len(deployment_calibration)},
+        "sources_sha256": {filename: hashlib.sha256((DATA_DIR / filename).read_bytes()).hexdigest()
+                           for filename in ["results.csv", "races.csv", "drivers.csv", "constructors.csv", "circuits.csv", "f1_2025_grid.csv"]},
+        "sklearn_version": sklearn.__version__,
+    })
+    circuits = pd.read_csv(DATA_DIR / "circuits.csv")
+    circuits = circuits.loc[circuits.circuitId.isin(history.circuitId.unique()), ["circuitId", "name", "country"]]
+    bundle = {"schema_version": SCHEMA_VERSION, "features": FEATURES, "trained_through": cutoff,
+              "models": models, "state": state, "roster": prepare_roster(DATA_DIR),
+              "circuits": circuits, "metrics": report, "feature_importance": importance}
+    MODEL_DIR.mkdir(exist_ok=True)
+    # Publish one self-contained bundle atomically so live sessions cannot mix generations.
+    with tempfile.TemporaryDirectory(dir=MODEL_DIR) as temporary:
+        artifact = Path(temporary) / "prerace_bundle.joblib"
+        joblib.dump(bundle, artifact)
+        artifact.replace(MODEL_DIR / "prerace_bundle.joblib")
     (MODEL_DIR / "metrics.json").write_text(json.dumps(report, indent=2) + "\n")
-    print(f"Models in: {MODEL_DIR.resolve()}")
+    predictions.to_csv(MODEL_DIR / "backtest_predictions.csv", index=False)
+    print(pd.DataFrame(report["models"]).T[["f1", "roc_auc", "brier", "top3_recall"]].round(4).to_string())
+    print(f"Saved pre-race model bundle and backtest report to {MODEL_DIR.resolve()}")
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

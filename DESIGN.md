@@ -1,6 +1,6 @@
 # Pitwall design system
 
-A scenario analysis dashboard for F1 fans and ML students. Primary task: compare
+A pre-race analysis dashboard for F1 fans and ML students. Primary task: compare
 podium estimates under explicit assumptions. Precise, sporting, restrained,
 transparent. Aesthetic essence: motorsport timing desk.
 
@@ -31,19 +31,27 @@ Radii 4px and 8px. Defined edges, no shadows.
 
 ## Craft
 
-Sidebar houses shared assumptions. Work area starts with a compact title and an
-explicit scenario notice; analysis uses native tabs, paired comparisons, and a
+Sidebar houses the race date, circuit, round and shared model selector; the history cutoff is always visible. Work area starts with a compact title and an
+explicit chronology notice; analysis uses native tabs, paired comparisons, and a
 sortable timing sheet. Numbers use tabular figures; headings use condensed type.
 Primary emphasis goes to the estimate, not decoration. Tables retain native
 keyboard behavior. Grid validation preserves edits and blocks invalid scoring.
 Score charts use a fixed 0–100% axis and percentage tooltips. Controls have visible labels and native loading, focus, selected and disabled
 states. No motion, custom icons, or color-only meaning. Layout stacks on mobile.
-Historical team mappings are disclosed; scores are never called calibrated
-confidence or race-finish probabilities. Model agreement is not uncertainty.
+Historical team mappings and rookie priors are disclosed. Individual models use
+sigmoid calibration on a separate earlier season; the ensemble average is not
+separately calibrated. Held-out Brier error is shown alongside classification and
+ranking baselines. Retrospective artifacts are rejected. Model agreement is not uncertainty.
 
 ## Audit
 
 2026-11-13: Source audit passes palette, hierarchy, restrained geometry, labeled
 controls, non-color status, and reduced-motion requirements. Desktop and 390px mobile browser checks pass, with no JavaScript errors or page
-overflow. CSV export and all four tabs were exercised; five automated tests pass. No accessibility
+overflow. CSV export and all four tabs were exercised; the original five automated tests passed. No accessibility
 conformance claim without a full assistive-technology audit.
+
+2026-11-13 retraining upgrade: removed post-race controls; added circuit/date/round,
+cutoff disclosure, chronological backtests, calibration comparison and cold-start
+coverage. The existing timing-desk typography, palette and responsive layout remain.
+The retraining upgrade passes 16 automated tests, desktop and 390px mobile
+browser checks, and downloads of both the scenario CSV and backtest JSON.

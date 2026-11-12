@@ -1,4 +1,5 @@
 """Pitwall: an interactive F1 podium scenario lab. Run: streamlit run app.py."""
+from datetime import date, timedelta
 from html import escape
 import json
 from pathlib import Path
@@ -8,7 +9,8 @@ import joblib
 import pandas as pd
 import streamlit as st
 
-from prediction import MODEL_LABELS, build_features, predict_models, select_scores, validate_grid
+from prediction import (MODEL_LABELS, build_features, predict_models, select_scores,
+                        validate_bundle, validate_grid)
 
 ROOT = Path(__file__).parent
 DATA, MODELS = ROOT / "data", ROOT / "models"
@@ -42,58 +44,51 @@ button[data-baseweb="tab"] {font-size:16px; min-height:48px;}
 
 
 @st.cache_resource
-def load_models():
-    models = {key: joblib.load(MODELS / f"f1_model_{key}.joblib") for key in MODEL_LABELS}
-    return models, joblib.load(MODELS / "preprocessors.joblib")
-
-
-@st.cache_data
-def load_data():
-    return (pd.read_csv(DATA / "f1_2025_grid.csv"), pd.read_csv(DATA / "races.csv"),
-            pd.read_csv(DATA / "status.csv"))
+def load_bundle(modified_ns):
+    # The file timestamp invalidates cached models when an atomic retrain finishes.
+    bundle = joblib.load(MODELS / "prerace_bundle.joblib")
+    validate_bundle(bundle)
+    return bundle
 
 
 st.sidebar.markdown('<div class="brand">PIT<span>WALL</span> / F1</div>', unsafe_allow_html=True)
-st.sidebar.caption("PODIUM SCENARIO LAB")
+st.sidebar.caption("PRE-RACE PODIUM LAB")
 st.title("Every grid slot tells a story.")
 st.write("Explore the grid. Compare the models. Build your race scenario.")
-st.info("Scenario analysis · These models use post-race features. Estimates depend on your assumptions and are not validated pre-race forecasts.", icon="ℹ️")
+st.info("Pre-race models · Starting grid and strictly earlier race results only. Evaluated on later seasons, with a separate season for probability calibration.", icon="ℹ️")
 
-missing = [f"f1_model_{key}.joblib" for key in MODEL_LABELS] + ["preprocessors.joblib"]
-if any(not (MODELS / name).exists() for name in missing):
-    st.warning("Train the models to open your analysis workspace.")
+bundle_path = MODELS / "prerace_bundle.joblib"
+if not bundle_path.exists():
+    st.warning("Train the upgraded pre-race models to open your analysis workspace.")
     st.code("python train_models.py\npython -m streamlit run app.py", language="bash")
-    st.caption("Training uses the historical CSV files in data/ and saves the model artifacts locally.")
+    st.caption("Legacy retrospective artifacts are incompatible. Retraining builds one versioned pre-race bundle.")
     st.stop()
 try:
-    models, prep = load_models()
-    grid, races, statuses = load_data()
+    prep = load_bundle(bundle_path.stat().st_mtime_ns)
+    models, grid, circuits = prep["models"], prep["roster"], prep["circuits"]
 except Exception as exc:
-    st.error(f"Could not load the local data or model artifacts: {exc}")
-    st.caption("Check data/ and retrain the models with the installed dependencies.")
+    st.error(f"Could not load the pre-race model bundle: {exc}")
+    st.caption("Retrain with python train_models.py using the installed dependencies.")
     st.stop()
 
 st.sidebar.subheader("Race setup")
 selection = st.sidebar.selectbox("Scoring model", ["Model average", *MODEL_LABELS.values()],
-    help="The average gives each model equal weight. All views use the same scoring choice.")
-min_year, max_year = int(races.year.min()), int(races.year.max())
-year = st.sidebar.number_input("Scenario season", min_year, max(max_year, 2025), 2025)
-st.sidebar.caption(f"Historical race data: {min_year}–{max_year}. Driver roster: static 2025 snapshot.")
+    help="The average gives each calibrated model equal weight. All views use the same scoring choice.")
+cutoff = date.fromisoformat(prep["trained_through"])
+race_date = st.sidebar.date_input("Race date", value=max(date(cutoff.year + 1, 3, 16), cutoff + timedelta(days=7)),
+                                  min_value=cutoff + timedelta(days=1),
+                                  help="The deployed models have seen data through the cutoff. Earlier dates require backtest models.")
+round_number = st.sidebar.number_input("Race round", 1, 30, 1)
+circuit_names = circuits.set_index("circuitId")["name"].to_dict()
+circuit_id = st.sidebar.selectbox("Circuit", list(circuit_names), format_func=lambda key: circuit_names[key])
+year = race_date.year
+st.sidebar.caption(f"History and calibration end {cutoff:%d %b %Y}. No later results are included. Roster: bundled 2025 snapshot.")
 threshold = st.sidebar.slider("Podium score threshold", 0.05, 0.95, 0.5, 0.05,
     help="Labels scores above this value; it does not change the model or force exactly three podiums.")
-with st.sidebar.expander("Race assumptions", expanded=False):
-    st.caption("Shared across drivers. Change these to explore a hypothetical finish.")
-    laps = st.slider("Laps completed", 0, 100, 58)
-    status_options = dict(zip(statuses.statusId.astype(int), statuses.status))
-    status_id = st.selectbox("Result status", list(status_options),
-                            format_func=lambda key: status_options[key])
-    fastest_lap = st.slider("Fastest lap set on lap", 1, max(laps, 1), min(40, max(laps, 1)))
-    rank = st.slider("Fastest-lap rank", 1, 24, 8)
-    speed = st.slider("Fastest-lap speed (km/h)", 100.0, 300.0, 220.0, 1.0)
-assumptions = {"year": year, "laps": laps, "statusId": status_id, "fastestLap": fastest_lap,
-               "rank": rank, "fastestLapSpeed": speed}
+assumptions = {"race_date": race_date.isoformat(), "round": round_number, "circuitId": circuit_id}
 st.sidebar.divider()
-st.sidebar.caption("Independent binary classifiers estimate top-three membership. Scores across a grid need not sum to three; rankings are not predicted finishing positions.")
+st.sidebar.caption("Form uses the last five driver starts and five team races; circuit history uses the last three visits. Rookie priors are disclosed below. Starting position is a post-qualifying input; use 0 for a pit-lane start in driver views.")
+st.sidebar.caption("Independent classifiers estimate top-three membership. Scores across a grid need not sum to three; rankings are not predicted finishing positions.")
 
 
 def score(entries):
@@ -112,10 +107,15 @@ def driver_entries(names, positions):
     return entries
 
 
-def alias_note(aliases):
-    if aliases:
-        st.caption("Historical team mapping: " + " · ".join(aliases))
-    st.caption("Driver identity is not a model feature. Drivers with the same team and nationality receive identical scores at equal grid positions.")
+def history_note(notes):
+    for note in notes:
+        if "no recorded F1 starts" in note:
+            st.caption(note)
+    if notes:
+        with st.expander("History coverage and team mappings"):
+            for note in notes:
+                st.write(note)
+    st.caption(f"Form snapshot: {cutoff:%d %b %Y}. Changing the race date does not invent later race results.")
 
 
 def probability_columns():
@@ -145,11 +145,12 @@ names = grid.driver_name.tolist()
 with single:
     left, right = st.columns([2, 1])
     name = left.selectbox("Driver · 2025 roster", names)
-    position = right.number_input("Starting position", 1, len(grid), 5)
-    entries = driver_entries([name], [position])
-    probabilities, scores, aliases = score(entries)
-    st.subheader(f"{name} / P{position:02}")
-    st.caption(f"{entries.iloc[0].team_name} · {year} scenario · {selection}")
+    position = right.number_input("Starting position", 0, len(grid), 5)
+    analysis_entries = driver_entries([name], [position])
+    probabilities, scores, aliases = score(analysis_entries)
+    starting_label = f"P{position:02}" if position else "Pit lane"
+    st.subheader(f"{name} / {starting_label}")
+    st.caption(f"{analysis_entries.iloc[0].team_name} · {circuit_names[circuit_id]} · {race_date:%d %b %Y} · {selection}")
     a, b, c = st.columns([2, 1, 1])
     a.metric("Podium score", f"{scores.iloc[0]:.1%}")
     b.metric("Model spread", f"{(probabilities.iloc[0].max() - probabilities.iloc[0].min()) * 100:.1f} pp")
@@ -166,8 +167,8 @@ with single:
         y=alt.Y("Podium score:Q", axis=alt.Axis(format="%"), scale=alt.Scale(domain=[0, 1])),
         tooltip=["Starting position", alt.Tooltip("Podium score:Q", format=".1%")],
     ).properties(height=230), width="stretch")
-    st.caption("Only starting position changes in this sweep; all race assumptions stay fixed.")
-    alias_note(aliases)
+    st.caption("Only starting position changes in this sweep; driver form, team form and circuit history stay fixed.")
+    history_note(aliases)
 
 with full_grid:
     st.subheader("Set the grid. See the contenders.")
@@ -200,18 +201,20 @@ with full_grid:
         st.caption("Top three by score; this is not a joint podium forecast. Ties use starting position.")
         st.dataframe(result, hide_index=True, width="stretch", column_config=probability_columns())
         score_chart(result[["Driver", "Podium score"]], "Driver", 560)
-        export = result.assign(**assumptions, scoring_model=selection, threshold=threshold)
+        export = result.assign(**assumptions, circuit=circuit_names[circuit_id],
+            scoring_model=selection, threshold=threshold, trained_through=prep["trained_through"],
+            model_version=prep["schema_version"], model_created_at=prep["metrics"]["created_at"])
         st.download_button("Download scenario CSV", export.to_csv(index=False).encode("utf-8"),
                            "pitwall_scenario.csv", "text/csv")
-        alias_note(aliases)
+        history_note(aliases)
 
 with compare:
-    st.subheader("Two drivers. Shared assumptions.")
+    st.subheader("Two drivers. Shared race context.")
     col_a, col_b = st.columns(2)
     first = col_a.selectbox("Driver A", names, key="driver_a")
     second = col_b.selectbox("Driver B", [n for n in names if n != first], key="driver_b")
-    slot_a = col_a.number_input("Starting position A", 1, len(grid), 1)
-    slot_b = col_b.number_input("Starting position B", 1, len(grid), 2)
+    slot_a = col_a.number_input("Starting position A", 0, len(grid), 1)
+    slot_b = col_b.number_input("Starting position B", 0, len(grid), 2)
     probabilities, scores, aliases = score(driver_entries([first, second], [slot_a, slot_b]))
     col_a.metric(first, f"{scores.iloc[0]:.1%}")
     col_b.metric(second, f"{scores.iloc[1]:.1%}")
@@ -221,40 +224,47 @@ with compare:
         id_vars="Driver", var_name="Model", value_name="Podium score")
     score_chart(comparison, "Model", 300, group="Driver")
     st.caption("Compares top-three scores, not the probability that one driver beats the other.")
-    alias_note(aliases)
+    history_note(aliases)
 
 with evidence:
-    st.subheader("Know what sits behind the score.")
-    st.write("Random Forest, Gradient Boosting and XGBoost are trained on historical Ergast race entries. Each predicts podium membership using the same nine features.")
-    metrics_path = MODELS / "metrics.json"
-    if metrics_path.exists():
-        try:
-            report = json.loads(metrics_path.read_text())
-            metrics = pd.DataFrame(report["models"]).T.rename(index=MODEL_LABELS)
-            st.dataframe(metrics.rename(columns={"f1": "Podium F1", "roc_auc": "ROC-AUC", "time": "Train seconds"}),
-                         width="stretch")
-            st.caption(f"Local training run · {report['samples']:,} entries · {report['train_samples']:,} train / {report['test_samples']:,} test · 80/20 stratified random split, seed 42.")
-        except (ValueError, KeyError, TypeError):
-            st.warning("The training report could not be read. Retrain to regenerate it.")
-    else:
-        st.caption("Retrain with python train_models.py to generate metrics for your local artifacts.")
+    st.subheader("Tested on seasons the models had not seen.")
+    st.write("Random Forest, Gradient Boosting and XGBoost use starting position, race round, prior driver and team form, and prior circuit results. Current-race finishing data never enters the feature set.")
+    report = prep["metrics"]
+    labels = {**MODEL_LABELS, "model_average": "Model average", "prior_rate": "Prior-rate baseline", "grid_top3": "Grid top-three baseline"}
+    columns = ["f1", "roc_auc", "average_precision", "brier", "raw_brier", "top3_recall"]
+    metric_labels = {"f1": "Podium F1", "roc_auc": "ROC-AUC", "average_precision": "Avg. precision",
+                     "brier": "Brier (lower is better)", "raw_brier": "Brier before calibration",
+                     "top3_recall": "Top-three pick recall"}
+    metrics = pd.DataFrame(report["models"]).T.rename(index=labels)
+    st.dataframe(metrics[columns].rename(columns=metric_labels).round(4), width="stretch")
+    st.caption(f"Walk-forward backtests: {', '.join(map(str, report['backtest_years']))} · {report['test_entries']:,} test entries across {report['test_races']} races. F1 uses a fixed 0.5 threshold. Top-three pick recall is the fraction of actual podium finishers found among the three highest scores per race.")
+    st.caption("The prior-rate baseline uses training-set podium prevalence. The grid baseline selects starting slots 1–3, with hard 0/1 scores. Its Brier and log loss are not calibrated probability benchmarks.")
+    st.subheader("Season-by-season backtest")
+    folds = [{"Test season": fold["test_year"], "Base fit through": fold["train_through"],
+              "Calibration season": fold["calibration_year"], "Model": labels[key],
+              "Podium F1": values["f1"], "Brier": values["brier"], "Top-three pick recall": values["top3_recall"]}
+             for fold in report["folds"] for key, values in fold["models"].items()]
+    st.dataframe(pd.DataFrame(folds).round(4), hide_index=True, width="stretch")
+    deployment = report["deployment"]
+    st.caption(f"Deployment bundle: base models fitted through {deployment['base_train_through']}; sigmoid calibration on {deployment['calibration_year']}; form history through {prep['trained_through']}. Backtest models are separate from this final deployment fit.")
     st.markdown("""
-**Read the results with these limits in mind**
+**How the time boundary works**
 
-- **Post-race inputs:** completed laps, fastest lap, lap rank, speed and result status leak race outcomes. Holdout metrics do not measure pre-race forecasting skill.
-- **Random holdout:** the split mixes seasons; it does not test performance on a future season.
-- **Uncalibrated estimates:** averaging model outputs does not calibrate them or enforce three podium places.
-- **Static roster:** this is the bundled 2025 roster, with historical constructor aliases. Driver form, circuit, weather and team upgrades are not features.
-
-A true pre-race model needs features available before lights out, rolling history built without future results, and season-based backtesting.
+- Each entry reads history from strictly earlier race dates. Team form updates after all teammates have been scored, so there is no within-race leakage.
+- Base model fitting, probability calibration and test seasons are separate. During a test season, form can use already-completed races, while model weights stay fixed.
+- The individual models use sigmoid calibration. Their equal-weight average is not separately calibrated; Brier scores report observed held-out probability error.
+- The static 2025 roster and data ending in 2024 are not a live forecast service. Rookies use fixed priors plus their team's available history. Team changes follow the selected roster's constructor.
+- Qualifying times, weather, tyres and current car upgrades are absent. Scores are independent and do not enforce exactly three podium places.
 """)
-    with st.expander("Inspect the current model inputs"):
-        st.code("\n".join(prep["features"]), language="text")
-    importance = pd.DataFrame({MODEL_LABELS[key]: model.feature_importances_ for key, model in models.items()},
-                              index=prep["features"])
+    with st.expander("Inspect the selected driver's pre-race inputs"):
+        selected_features, _ = build_features(analysis_entries, prep, assumptions)
+        st.dataframe(selected_features.T.rename(columns={0: "Feature value"}), width="stretch")
+    importance = pd.DataFrame(prep["feature_importance"], index=prep["features"])
     st.subheader("Feature importance")
-    st.bar_chart(importance.sort_values("Random Forest"), horizontal=True, stack=False, height=400)
-    st.caption("Built-in model importance describes model dependence, not a causal effect.")
+    st.bar_chart(importance.sort_values("Random Forest"), horizontal=True, stack=False, height=480)
+    st.caption("Base-estimator importance describes model dependence, not a causal effect or a calibrated contribution.")
+    st.download_button("Download backtest report", json.dumps(report, indent=2),
+                       "pitwall_backtest.json", "application/json")
 
 st.divider()
-st.caption("PITWALL / Local F1 scenario analysis · Historical data, explicit assumptions.")
+st.caption("PITWALL / Pre-race F1 podium analysis · Chronological backtests, explicit data cutoff.")

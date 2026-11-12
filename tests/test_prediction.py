@@ -1,11 +1,12 @@
-"""Run with python -m unittest discover -s tests."""
+"""Pre-race inference validation and model scoring tests."""
 import unittest
 
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
 
-from prediction import build_features, predict_models, select_scores, validate_grid
+from features import FEATURES, SCHEMA_VERSION, build_training_table
+from prediction import build_features, predict_models, select_scores, validate_bundle, validate_grid
+from test_features import sample_history
 
 
 class PredictionTests(unittest.TestCase):
@@ -15,22 +16,36 @@ class PredictionTests(unittest.TestCase):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 validate_grid(pd.DataFrame({"Grid": values}))
 
-    def test_features_follow_artifact_order_and_report_aliases(self):
-        prep = {"features": ["grid", "year", "constructor_encoded", "nationality_encoded"],
-                "le_nat": LabelEncoder().fit(["Dutch"]),
-                "le_con": LabelEncoder().fit(["Ferrari", "Red Bull"])}
-        drivers = pd.DataFrame([{"nationality": "Dutch", "team_name": "Red Bull Racing", "Grid": 2}])
-        features, aliases = build_features(drivers, prep, {"year": 2025})
-        self.assertEqual(features.columns.tolist(), prep["features"])
-        self.assertEqual(features.iloc[0].tolist(), [2, 2025, 1, 0])
-        self.assertEqual(aliases, ["Red Bull Racing → Red Bull"])
-        drivers.loc[0, "team_name"] = "Unknown Team"
-        with self.assertRaisesRegex(ValueError, "Unknown Team"):
-            build_features(drivers, prep, {"year": 2025})
-        drivers.loc[0, "team_name"] = "Ferrari"
-        drivers.loc[0, "nationality"] = "Unknown nationality"
-        with self.assertRaisesRegex(ValueError, "Unknown nationality"):
-            build_features(drivers, prep, {"year": 2025})
+    def test_snapshot_features_dates_and_cold_start_notes(self):
+        history = sample_history()
+        _, state = build_training_table(history)
+        prep = {"state": state, "trained_through": "2022-03-08", "circuits": pd.DataFrame({"circuitId": [1, 2]})}
+        drivers = pd.DataFrame([{"driver_key": "rookie", "driver_name": "Rookie", "constructorId": 10,
+                                 "historical_team": "Team", "team_name": "Team Racing", "Grid": 2}])
+        assumptions = {"race_date": "2023-03-01", "round": 1, "circuitId": 2}
+        features, notes = build_features(drivers, prep, assumptions)
+        self.assertEqual(features.columns.tolist(), FEATURES)
+        self.assertEqual(features.iloc[0].grid, 2)
+        self.assertEqual(features.iloc[0].driver_experience, 0)
+        self.assertTrue(any("rookie priors" in note for note in notes))
+        self.assertTrue(any("Team Racing → Team" in note for note in notes))
+        for bad in ("2022-03-08", "2020-01-01", None):
+            with self.subTest(date=bad), self.assertRaises(ValueError):
+                build_features(drivers, prep, {**assumptions, "race_date": bad})
+        for bad in (-1, 1.5, np.nan, 25):
+            with self.subTest(grid=bad), self.assertRaises(ValueError):
+                build_features(drivers.assign(Grid=bad), prep, assumptions)
+        with self.assertRaisesRegex(ValueError, "circuit"):
+            build_features(drivers, prep, {**assumptions, "circuitId": 999})
+        with self.assertRaises(ValueError):
+            build_features(drivers, prep, {**assumptions, "round": 1.5})
+
+    def test_legacy_artifacts_are_rejected(self):
+        for bundle in ({}, {"schema_version": 1}, {"schema_version": SCHEMA_VERSION, "features": ["laps"]}):
+            with self.subTest(bundle=bundle), self.assertRaises(ValueError):
+                validate_bundle(bundle)
+        with self.assertRaisesRegex(ValueError, "Incomplete"):
+            validate_bundle({"schema_version": SCHEMA_VERSION, "features": FEATURES, "models": {}})
 
     def test_batch_scoring_uses_average_instead_of_optimistic_maximum(self):
         class Model:

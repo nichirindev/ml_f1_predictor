@@ -1,173 +1,173 @@
-# 🏁 F1 Podium Prediction with Machine Learning
+# Pitwall · Pre-race F1 Podium Predictor
 
-An end-to-end machine learning project that predicts whether a Formula 1 driver will
-finish a race **on the podium (top 3)** — from raw historical race data, through
-training and comparison of three models, to a live interactive dashboard.
+A local ML dashboard that estimates a driver's chance of a top-three finish **after
+qualifying and before the race**. Three classifiers use the starting grid, previous
+driver and team results, and prior circuit history. No current-race laps, finishing
+status, fastest lap, points or finishing position enter the model.
 
-> **Result:** ~0.90 accuracy and ~0.96 ROC-AUC across all models. Best F1 (podium class):
-> **XGBoost — 0.7212**. Best precision: **Gradient Boosting — 0.700** (accuracy 0.9140).
+The upgrade replaces the original retrospective model and its random split. Those
+older scores measured a different task and are not comparable to the backtests below.
 
----
-
-## 📌 Problem Statement
-
-Predict, for any F1 race entry, whether the driver finishes in **position 1–3**.
-
-- Framed as **binary classification**: `top3 = 1` (podium) vs `top3 = 0` (position 4+ or DNF).
-- Hard because podiums are rare — only **14.9%** of the 8,252 clean race entries in the
-  dataset — making this a heavily **imbalanced classification** problem.
-- Metric focus is therefore the **F1-score of the podium class**, not raw accuracy.
-
-## 📊 Dataset
-
-Built on the [Ergast Formula 1 database](https://ergast.com/mdb/) (1950–2024),
-supplemented with a custom 2025 grid/results file for live predictions.
-
-| File | Rows | Role |
-|---|---:|---|
-| `data/results.csv` | 26,759 | Target + core features |
-| `data/races.csv` | 1,125 | Season / circuit context |
-| `data/drivers.csv` | 861 | Driver nationality |
-| `data/constructors.csv` | 212 | Team identity |
-| `data/qualifying.csv` | 10,494 | Grid source (future use) |
-| `data/lap_times.csv` | 589,081 | Telemetry-level detail |
-| `data/f1_2025_grid.csv` | 20 | 2025 drivers & teams (front end) |
-| `data/f1_2025_results.csv` | 66 | 2025 race results |
-
-> The large `data/lap_times.csv` is not committed — download the full dataset from
-> [Kaggle: Formula 1 World Championship (1950–2020+)](https://www.kaggle.com/datasets/rohanrao/formula-1-world-championship-2007-2020)
-> or [ergast.com/mdb](https://ergast.com/mdb/) and place the CSVs in `data/`.
-
-## ⚙️ Pipeline
-
-```
-data/*.csv ─► merge & clean ─► features + top3 target ─► 80/20 stratified split
-   ─► train RF / GradientBoosting / XGBoost ─► evaluate & compare
-   ─► save joblib models + encoders (models/) ─► Streamlit dashboard (app.py)
-```
-
-**Features (9):** `grid`, `laps`, `fastestLap`, `rank`, `fastestLapSpeed`, `year`,
-`statusId`, plus label-encoded `nationality` and `constructor`.
-**Target:** `top3` = finishing position ≤ 3.
-**Split:** 80/20 stratified → 6,601 train / 1,651 test samples.
-
-## 🤖 Models & Results
-
-| Model | Hyperparameters | Accuracy | Precision | Recall | F1 (podium) | ROC-AUC | Train |
-|---|---|---:|---:|---:|---:|---:|---:|
-| **XGBoost** ★ | 200 est., depth 6, lr 0.1, `scale_pos_weight` | 0.8988 | 0.6119 | **0.8780** | **0.7212** | 0.9557 | 2.06 s |
-| Gradient Boosting | 200 est., depth 5, lr 0.1 | **0.9140** | **0.7000** | 0.7398 | 0.7194 | **0.9570** | 1.75 s |
-| Random Forest | 200 trees, depth 15, `class_weight='balanced'` | 0.8964 | 0.6068 | 0.8659 | 0.7136 | 0.9568 | **0.23 s** |
-
-All three models share identical features and split, so the comparison is like-for-like.
-Feature importance confirms F1 domain knowledge: **grid position** dominates, followed by
-**constructor identity** — the car matters more than the driver's passport.
-
-![Feature importance](feature_importance.png)
-
-## 🖥️ Pitwall dashboard (Streamlit)
+## Run it
 
 ```bash
-python -m streamlit run app.py        # → http://localhost:8501
-```
-
-A dark motorsport workspace with four analysis views:
-
-- **Driver analysis** — compare all three model scores and sweep every starting
-  position while holding the remaining assumptions fixed.
-- **Grid simulator** — edit all starting slots, rank the field, and download a CSV
-  with every model score, selected scoring method, threshold and scenario inputs.
-  Duplicate, missing and fractional starting slots block scoring until corrected.
-- **Head to head** — compare two drivers at independently chosen grid positions.
-  This compares podium membership scores, not the chance one driver beats another.
-- **Model evidence** — inspect metrics from your local training run, feature
-  importance from the loaded artifacts, and the limitations of the models.
-
-All views share a model selector (equal-weight model average by default), a
-classification threshold, and race assumptions. Model spread measures disagreement,
-not calibrated uncertainty. Grid scores are independent and need not sum to three;
-score rank is not a predicted race finishing position.
-
-Models and encoders are cached. Historical team aliases are disclosed; unknown
-teams and nationalities stop inference rather than silently borrowing an unrelated
-label. Driver identity itself is not a feature. The roster is the bundled **2025
-snapshot**, even when you change the hypothetical scenario season. Missing models
-show setup instructions instead of a traceback.
-
-Training writes `models/metrics.json` alongside the model artifacts. The dashboard
-reads this report rather than displaying hard-coded benchmark claims. The numbers
-in the table above are the original project benchmarks and may differ by library
-version. Metrics still reflect the original retrospective, random-holdout task.
-
-## 🚀 Getting Started
-
-```bash
-# 1. Create a virtual environment
-python -m venv venv
-source venv/bin/activate              # Linux / macOS
-# Windows: .\venv\Scripts\activate
-
-# 2. Install dependencies
+python -m venv .venv
+source .venv/bin/activate            # Linux / macOS
+# Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-
-# 3. (Optional) Download full Ergast CSVs into data/ (incl. lap_times.csv)
-
-# 4. Train the models (saves to models/)
 python train_models.py
-
-# 5. Launch the dashboard
-python -m streamlit run app.py
+python -m streamlit run app.py      # http://localhost:8501
 ```
 
-## 📁 Project Structure
+The bundled CSVs are sufficient; lap-time downloads and API credentials are not
+required. scikit-learn 1.6+ is required for frozen-estimator calibration. Retrain
+artifacts when upgrading ML libraries. Legacy joblib files cannot be used with the
+new dashboard. Restart an already-running Streamlit server after this schema upgrade.
 
-```
-ml_f1_predictor/
-├── data/                  # Ergast CSVs + 2025 grid/results
-├── models/                # Trained .joblib models + encoders (gitignored, regenerable)
-├── preprocess.py          # Early exploratory pipeline + feature-importance plot
-├── train_models.py        # Full training pipeline → models/ (canonical)
-├── compare_models.py      # Quick one-off model comparison
-├── app.py                 # Pitwall Streamlit dashboard
-├── prediction.py          # Shared batch inference and grid validation
-├── tests/                 # Inference and Streamlit interaction checks
-├── DESIGN.md              # Visual system and interface decisions
-├── .streamlit/config.toml # Native dark theme
-├── build_ppt.py           # Generates F1_Podium_Prediction.pptx (project deck)
-└── requirements.txt
-```
+## Pre-race features
 
-## ⚠️ Limitations
+`features.py` is shared by training and inference. It processes races in date order,
+reads the history snapshot **before** each event, then updates it after all teammates
+have been scored. Even separate events on the same date cannot observe one another.
 
-- **Data leakage:** `laps`, `fastestLap`, `rank`, `fastestLapSpeed` and `statusId` are
-  only known *after* a race — the current model is explanatory/retrospective, not a
-  true pre-race forecast.
-- Random (not time-based) split — no true out-of-sample season validation yet.
-- No qualifying times, weather, tyre or telemetry features.
-- Static label encoders — new teams/drivers require retraining.
+| Input | Definition |
+|---|---|
+| Starting position | Final grid slot; a recorded zero is represented as a non-grid/pit-lane flag and position 25 |
+| Race round | Round number known before the race |
+| Recent driver form | Mean classified finish and podium rate over the previous five starts |
+| Driver history coverage | Number of prior starts in that window and experience capped at 100 starts |
+| Recent team form | Mean finish and podium rate over the previous five Grands Prix, averaging teammates within each event |
+| Team history coverage | Number of prior team races in the recent window |
+| Driver circuit history | Mean finish, podium rate and count over the previous three visits |
+| Team circuit history | Mean finish and podium rate over the previous three team visits |
 
-## 🗺️ Roadmap
+There are 15 numeric features. Finish history uses `positionOrder`, including DNFs;
+the target uses official finishing position 1–3. Entries are not discarded for
+missing lap telemetry. No arbitrary driver, nationality or team label encoding is
+used. Driver and constructor identity select the relevant historical form.
 
-- [ ] Leakage-free retrain using pre-race features (rolling driver/constructor form, circuit history)
-- [ ] Time-based backtesting: train ≤ year *X*, predict season *X+1*
-- [x] Head-to-head podium score comparison
-- [ ] Race-winner prediction mode
-- [ ] Automated ingestion of new 2025 results + scheduled retraining
-- [x] Grid-position sensitivity, model comparison charts and scenario CSV export
-- [ ] Probability calibration
+Cold starts use fixed priors: mean finish **15** and podium rate **0.10**, with zero
+history counts. These are explicit assumptions, not statistics estimated from the
+future. Rookies retain their available team history. Constructor names are mapped
+explicitly (`Red Bull Racing` → `Red Bull`, `Kick Sauber` → `Sauber`, etc.). Different
+constructor IDs are not automatically merged into an organizational lineage.
+Roster-local synthetic driver IDs are ignored: names are normalized, including
+`Hulkenberg` / `Hülkenberg`, to match real historical drivers.
 
-## 🛠️ Tech Stack
+## Chronological training and calibration
 
-Python 3.12 · pandas · scikit-learn · XGBoost · joblib · Streamlit · matplotlib/seaborn · python-pptx
+Training uses **2000–2024** results: 10,079 entries, including DNFs, rather than the
+8,252 telemetry-complete entries used by the old model. The default backtest holds
+out the latest three seasons:
 
-## Verification
+| Test season | Base model training | Sigmoid calibration |
+|---|---|---|
+| 2022 | 2000–2020 | 2021 |
+| 2023 | 2000–2021 | 2022 |
+| 2024 | 2000–2022 | 2023 |
 
-After training the models:
+For each fold, base model fitting, calibration and testing use disjoint dates.
+Calibration wraps an already fitted estimator in `FrozenEstimator`, following the
+[scikit-learn calibration API](https://scikit-learn.org/stable/modules/generated/sklearn.calibration.CalibratedClassifierCV.html).
+No random cross-validation is used to fit the base models or choose seasons.
+During a held-out season, form updates from earlier completed races, while base
+model weights and calibration stay fixed. This is a sequential race forecast,
+not a forecast of the whole season made before its first race.
+
+The deployment bundle is separate: base models fit **2000–2023**, sigmoid calibration
+uses **2024**, and the form snapshot ends **8 December 2024**. The base estimators
+are not refitted on calibration labels afterward. Deployment forecasts must have a
+race date after this cutoff; historical backtests use their own earlier models.
+
+Fixed model configurations use seed 42. The test set is not used for hyperparameter
+or threshold tuning. Evaluate alternative season sets explicitly with:
 
 ```bash
+python train_models.py --test-years 2021 2022 2023 2024
+```
+
+## Backtest results
+
+Initial upgraded run, pooled across 2022–2024: **1,359 test entries / 68 races**.
+These numbers measure the pre-race task, not the older leakage-prone experiment.
+
+| Model | Podium F1 | ROC-AUC | Brier ↓ | Top-three pick recall |
+|---|---:|---:|---:|---:|
+| Random Forest | 0.6562 | 0.9328 | 0.0713 | 0.6520 |
+| Gradient Boosting | 0.6632 | 0.9358 | 0.0687 | 0.6520 |
+| XGBoost | 0.6579 | 0.9314 | 0.0709 | 0.6471 |
+| Model average | 0.6597 | 0.9358 | 0.0694 | 0.6520 |
+| Grid positions 1–3 | 0.6486 | 0.7928 | 0.1052* | 0.6520 |
+| Training-prevalence baseline | 0.0000 | 0.5003 | 0.1277 | — |
+
+F1 uses a fixed **0.5** threshold. Brier measures probability error; lower is better.
+Top-three pick recall measures how many actual podium finishers appear in each
+race's three highest scores; ties use starting position, then normalized driver
+name. The constant prior has no ranking information. *The grid baseline assigns
+hard 0/1 scores, so it is a classification/ranking baseline rather than a calibrated
+probability model. Results depend on the local library versions.
+
+The gain over the grid baseline is modest. The models match its pooled top-three
+pick recall in this run. Calibration is not guaranteed to improve every model;
+reports show both raw and calibrated Brier error. The equal-weight model average
+is evaluated as an ensemble but is not separately calibrated.
+
+```bash
+python compare_models.py            # Prints the locally generated backtest
+python preprocess.py                # Refreshes the feature-importance PNG
 python -m unittest discover -s tests -v
 ```
 
-Inference tests cover grid validation, historical team aliases, unknown labels,
-feature ordering and shared model scoring. Streamlit tests exercise changing the
-model, race assumptions, driver comparison and invalid grid handling.
+## Dashboard
+
+- **Driver analysis:** select a 2025 driver and grid slot, compare model probabilities,
+  and sweep all starting positions. Zero represents a pit-lane start in driver views.
+- **Grid simulator:** edit every starting slot, rank contenders, and export scores
+  with race context, training cutoff and model generation metadata. Invalid grids
+  keep the edits and block grid scoring until corrected.
+- **Head to head:** compare two drivers' podium probabilities at selected starting
+  positions. This is not a model of which driver beats the other.
+- **Model evidence:** pooled and season-by-season backtests, baselines, calibration
+  error, selected driver's exact model inputs, and feature importance.
+
+All views share the same model selector, circuit, date, round and score threshold.
+The app reads the roster, history snapshot, models and report from one bundle, so
+data files edited after training do not silently change the inference snapshot.
+Retraining publishes the bundle atomically; its file timestamp invalidates the
+Streamlit cache on the next rerun. Missing or old model artifacts show setup guidance.
+
+## Data and generated artifacts
+
+Historical CSVs come from the Ergast F1 dataset. `results.csv`, `races.csv`,
+`drivers.csv` and `constructors.csv` form the training history; `circuits.csv`
+provides display metadata. The bundled `f1_2025_grid.csv` is a static roster snapshot.
+The separate `f1_2025_results.csv` contains only podium rows and is **excluded**:
+training on it would omit all negative race entries. No 2025 or 2026 race results
+are included in the deployed history.
+
+Training generates these ignored, reproducible files:
+
+- `models/prerace_bundle.joblib`: versioned models, rolling state, resolved roster,
+  circuits, feature importances and matching report in one deployable artifact.
+- `models/metrics.json`: backtest metrics, fold boundaries, deployment cutoff,
+  feature schema, source hashes and training timestamp.
+- `models/backtest_predictions.csv`: per-entry held-out predictions, including raw
+  and calibrated scores, for independent inspection.
+
+The original `build_ppt.py` is a legacy presentation generator describing the earlier
+retrospective experiment; it is not a report of the upgraded pipeline.
+
+## Tests and remaining limits
+
+Tests cover current-outcome and future-outcome invariance, teammate and same-date
+isolation, history window sizes, rookie defaults, training/inference parity,
+chronological split boundaries, frozen base estimators during calibration, schema
+rejection, score aggregation, grid editing and Streamlit controls. Dashboard tests
+require trained artifacts; pure feature and training tests do not.
+
+This remains a local prototype with stale data, a static 2025 roster, no weather,
+qualifying times, tyres or current car updates. Forecast dates do not invent later
+results: all deployment form stays at the saved cutoff until full new race results
+are ingested and the pipeline reruns. Independent binary probabilities do not
+sum to three or define a joint podium forecast. Calibration on one season does
+not guarantee probability reliability in a different competitive era.
