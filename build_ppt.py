@@ -146,6 +146,7 @@ bullets(tf, [
     ("Preprocessing & Feature Engineering", 0, True),
     ("Models & Methodology", 0, True),
     ("Results & Model Comparison", 0, True),
+    ("Related Work & Benchmarking", 0, True),
     ("Deployment - Streamlit Front End", 0, True),
     ("Limitations & Future Work", 0, True),
     ("Conclusion", 0, True),
@@ -409,9 +410,45 @@ bullets(tf, [
 ], size=15, spacing=6)
 
 # ======================================================================
-# 12 - DEPLOYMENT
+# 12 - RELATED WORK BENCHMARK
 # ======================================================================
-s = content_slide("Deployment - Streamlit Front End (app.py)", 12)
+s = content_slide("Related Work - How This Project Compares", 12)
+tbl = s.shapes.add_table(6, 4, Inches(0.8), Inches(1.5), Inches(11.7), Inches(2.9)).table
+tbl.columns[0].width, tbl.columns[1].width, tbl.columns[2].width, tbl.columns[3].width = \
+    Inches(2.5), Inches(3.5), Inches(2.6), Inches(3.1)
+fill_table(tbl, [
+    ["Work", "Data", "Models", "Reported podium result"],
+    ["This project", "Ergast 1950-2024: 26,759 entries, 8,252 clean", "RF + GradBoost + XGBoost, identical split",
+     "0.90 acc, 0.96 AUC, F1 0.72, recall 0.88"],
+    ["Polishchuk (2025)", "1st half of 2025 season only (~240 entries), FastF1", "RF, GB, Logistic Reg.",
+     "78% podium-spot accuracy; recall 0.43 on split"],
+    ["f1podiumpredictor (2025)", "3 seasons via FastF1", "2x Random Forest",
+     "94% acc, F1 0.86 (time-ordered split)"],
+    ["f1-race-predictor (2025)", "2021-2025, 60+ features", "RF, XGB, MLP, LogReg",
+     "96.6% acc on 290-entry validation; LogReg ties RF"],
+    ["El Haber et al. (2025)", "Historical F1 data", "RF + SHAP explainability", "Winner prediction (different task)"],
+])
+style_table(tbl, font_size=11)
+rect(s, Inches(0.8), Inches(4.7), Inches(11.7), Inches(2.0), LIGHT)
+_, tf = textbox(s, Inches(1.05), Inches(4.85), Inches(11.2), Inches(1.8))
+p = tf.paragraphs[0]
+set_run(p.add_run(), "Where this project is better", 15, RED, bold=True)
+bullets(tf, [
+    ("Breadth of data: 75 seasons vs 1-5 recent seasons - learns across regulation eras, "
+     "not one era of car dominance.", 0),
+    ("Scientific comparison: 3 models, identical features and split, two imbalance strategies, "
+     "5 metrics - most works report accuracy only, often from tiny validation windows.", 0),
+    ("Transparent claims: 94-96.6% headline accuracies come from 240-290-entry validations where "
+     "even Logistic Regression ties the best model (a leakage red flag) - our results are "
+     "reproducible with one command.", 0),
+    ("Deployed product + honest methodology: live 3-model dashboard, full-grid simulation, and "
+     "leakage documented openly with a concrete pre-race roadmap.", 0),
+], size=12.5, spacing=4)
+
+# ======================================================================
+# 13 - DEPLOYMENT
+# ======================================================================
+s = content_slide("Deployment - Streamlit Front End (app.py)", 13)
 _, tf = textbox(s, Inches(0.8), Inches(1.5), Inches(6.9), Inches(5.4))
 bullets(tf, [
     ("Three tabs", 0, True),
@@ -444,9 +481,9 @@ bullets(tf, [
 ], size=13, spacing=5)
 
 # ======================================================================
-# 13 - LIMITATIONS & FUTURE WORK
+# 14 - LIMITATIONS & FUTURE WORK
 # ======================================================================
-s = content_slide("Limitations & Future Work", 13)
+s = content_slide("Limitations & Future Work", 14)
 rect(s, Inches(0.8), Inches(1.55), Inches(5.9), Inches(5.15), LIGHT)
 _, tf = textbox(s, Inches(1.05), Inches(1.75), Inches(5.4), Inches(4.8))
 p = tf.paragraphs[0]
@@ -472,9 +509,9 @@ bullets(tf, [
 ], size=14, spacing=7)
 
 # ======================================================================
-# 14 - CONCLUSION
+# 15 - CONCLUSION
 # ======================================================================
-s = content_slide("Conclusion", 14)
+s = content_slide("Conclusion", 15)
 _, tf = textbox(s, Inches(0.8), Inches(1.55), Inches(11.9), Inches(4.4))
 bullets(tf, [
     ("Built a complete, reproducible ML system - from raw Ergast CSVs to a live interactive "
