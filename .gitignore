@@ -1,0 +1,31 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Virtual environment ---
+venv/
+.venv/
+
+# --- Secrets / environment ---
+.env
+.streamlit/secrets.toml
+
+# --- Large raw data (regenerable from the Ergast F1 dataset, see README) ---
+data/lap_times.csv
+
+# --- Trained model artifacts (regenerate with: python train_models.py) ---
+models/*.joblib
+
+# --- Generated outputs (regenerate with build_ppt.py / preprocess.py) ---
+F1_Podium_Prediction.pptx
+slide_*.png
+
+# --- OS / editor ---
+Thumbs.db
+.DS_Store
+.idea/
+.vscode/
