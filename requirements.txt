@@ -7,3 +7,4 @@ xgboost
 joblib
 streamlit
 python-pptx
+altair>=5

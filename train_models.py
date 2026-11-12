@@ -3,6 +3,7 @@ Train RF, Gradient Boosting, XGBoost on F1 data (predict podium top-3).
 Saves models + encoders to models/ for later inference.
 Usage: python train_models.py
 """
+import json
 import time
 from pathlib import Path
 
@@ -119,6 +120,9 @@ def main():
     print(df.to_string(float_format='%.4f'))
     best = df.index[0]
     print(f"\nBest model: {best} (F1={df.loc[best, 'f1']:.4f})")
+    report = {"samples": len(X), "train_samples": len(X_train),
+              "test_samples": len(X_test), "models": summary}
+    (MODEL_DIR / "metrics.json").write_text(json.dumps(report, indent=2) + "\n")
     print(f"Models in: {MODEL_DIR.resolve()}")
 
 

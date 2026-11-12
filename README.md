@@ -65,27 +65,47 @@ Feature importance confirms F1 domain knowledge: **grid position** dominates, fo
 
 ![Feature importance](feature_importance.png)
 
-## 🖥️ Front End (Streamlit)
+## 🖥️ Pitwall dashboard (Streamlit)
 
 ```bash
 python -m streamlit run app.py        # → http://localhost:8501
 ```
 
-- **🏁 Single Driver** — pick any 2025 driver, set a grid slot, and see podium
-  probability from all three models side by side.
-- **📊 Full Grid Simulation** — ranks all 20 drivers and highlights the projected top 3.
-- **ℹ️ About** — model docs and feature-importance chart.
+A dark motorsport workspace with four analysis views:
 
-Engineering notes: models and encoders are loaded once via `@st.cache_resource`;
-2025 team names are mapped to historical training labels (e.g. `RB` → Toro Rosso
-lineage) with safe fallbacks so unseen labels never crash the app.
+- **Driver analysis** — compare all three model scores and sweep every starting
+  position while holding the remaining assumptions fixed.
+- **Grid simulator** — edit all starting slots, rank the field, and download a CSV
+  with every model score, selected scoring method, threshold and scenario inputs.
+  Duplicate, missing and fractional starting slots block scoring until corrected.
+- **Head to head** — compare two drivers at independently chosen grid positions.
+  This compares podium membership scores, not the chance one driver beats another.
+- **Model evidence** — inspect metrics from your local training run, feature
+  importance from the loaded artifacts, and the limitations of the models.
+
+All views share a model selector (equal-weight model average by default), a
+classification threshold, and race assumptions. Model spread measures disagreement,
+not calibrated uncertainty. Grid scores are independent and need not sum to three;
+score rank is not a predicted race finishing position.
+
+Models and encoders are cached. Historical team aliases are disclosed; unknown
+teams and nationalities stop inference rather than silently borrowing an unrelated
+label. Driver identity itself is not a feature. The roster is the bundled **2025
+snapshot**, even when you change the hypothetical scenario season. Missing models
+show setup instructions instead of a traceback.
+
+Training writes `models/metrics.json` alongside the model artifacts. The dashboard
+reads this report rather than displaying hard-coded benchmark claims. The numbers
+in the table above are the original project benchmarks and may differ by library
+version. Metrics still reflect the original retrospective, random-holdout task.
 
 ## 🚀 Getting Started
 
 ```bash
 # 1. Create a virtual environment
 python -m venv venv
-.\venv\Scripts\activate            # Windows
+source venv/bin/activate              # Linux / macOS
+# Windows: .\venv\Scripts\activate
 
 # 2. Install dependencies
 pip install -r requirements.txt
@@ -108,7 +128,11 @@ ml_f1_predictor/
 ├── preprocess.py          # Early exploratory pipeline + feature-importance plot
 ├── train_models.py        # Full training pipeline → models/ (canonical)
 ├── compare_models.py      # Quick one-off model comparison
-├── app.py                 # Streamlit front end
+├── app.py                 # Pitwall Streamlit dashboard
+├── prediction.py          # Shared batch inference and grid validation
+├── tests/                 # Inference and Streamlit interaction checks
+├── DESIGN.md              # Visual system and interface decisions
+├── .streamlit/config.toml # Native dark theme
 ├── build_ppt.py           # Generates F1_Podium_Prediction.pptx (project deck)
 └── requirements.txt
 ```
@@ -126,10 +150,24 @@ ml_f1_predictor/
 
 - [ ] Leakage-free retrain using pre-race features (rolling driver/constructor form, circuit history)
 - [ ] Time-based backtesting: train ≤ year *X*, predict season *X+1*
-- [ ] Head-to-head and race-winner prediction modes
+- [x] Head-to-head podium score comparison
+- [ ] Race-winner prediction mode
 - [ ] Automated ingestion of new 2025 results + scheduled retraining
-- [ ] Probability calibration and richer dashboard charts
+- [x] Grid-position sensitivity, model comparison charts and scenario CSV export
+- [ ] Probability calibration
 
 ## 🛠️ Tech Stack
 
 Python 3.12 · pandas · scikit-learn · XGBoost · joblib · Streamlit · matplotlib/seaborn · python-pptx
+
+## Verification
+
+After training the models:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+Inference tests cover grid validation, historical team aliases, unknown labels,
+feature ordering and shared model scoring. Streamlit tests exercise changing the
+model, race assumptions, driver comparison and invalid grid handling.
