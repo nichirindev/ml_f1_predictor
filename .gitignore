@@ -22,8 +22,6 @@ models/*.joblib
 models/metrics.json
 
 # --- Generated outputs (regenerate with build_ppt.py / preprocess.py) ---
-F1_Podium_Prediction.pptx
-slide_*.png
 
 # --- OS / editor ---
 Thumbs.db
